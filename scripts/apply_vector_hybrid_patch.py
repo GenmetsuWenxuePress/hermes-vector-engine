@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Idempotent patch applicator for Hermes session_search score-aware calibrated RRF fusion,
-smart gap-gated hydration, and knowledge_search core toolset registration.
+smart gap-gated hydration, robust vector extraction, and knowledge_search core toolset registration.
 Used by systemd ExecStartPre before gateway startup and by hermes-maintenance updates.
 """
 
@@ -15,9 +15,112 @@ HERMES_ROOT = Path.home() / ".hermes" / "hermes-agent"
 SESSION_TOOL_FILE = HERMES_ROOT / "tools" / "session_search_tool.py"
 TOOLSETS_FILE = HERMES_ROOT / "toolsets.py"
 
-RRF_HYBRID_DISCOVER_BLOCK = """def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
+RRF_HYBRID_FULL_BLOCK = '''def _vector_search_candidates(db, query: str, limit: int = 15, min_score: float = 0.70,
+                             current_lineage_root: str = None, current_session_id: str = None) -> dict:
+    """Run GPU/Vulkan Vector Search over session transcripts and parse candidates with confidence scores."""
+    import subprocess
+    import re as _re
+    from pathlib import Path
+
+    script_path = Path.home() / ".hermes" / "scripts" / "index_all.py"
+    if not script_path.exists():
+        return {}
+
+    cmd = [
+        "/usr/bin/python3",
+        str(script_path),
+        "search",
+        "--kind",
+        "session",
+        "--min-score",
+        str(min_score),
+        query,
+        str(limit),
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except Exception as e:
+        logging.debug("vector candidate search subprocess failed: %s", e)
+        return {}
+
+    if res.returncode != 0 or not res.stdout:
+        return {}
+
+    lines = res.stdout.splitlines()
+    vec_ranked = {}
+    rank = 1
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("[") and "]" in stripped and "💬" in stripped:
+            try:
+                score_part = stripped.split("]")[0].replace("[", "").strip()
+                score = float(score_part)
+
+                if score < min_score:
+                    i += 1
+                    continue
+
+                source_part = stripped.split("💬")[1].strip()
+                m = _re.search(r"(?:active_session:|session:)([a-zA-Z0-9_.-]+)", source_part)
+                if not m:
+                    i += 1
+                    continue
+                sid = m.group(1).replace(".jsonl", "").split(":")[0]
+
+                pname = None
+                if source_part.startswith("profile:"):
+                    pname = source_part.split(":")[1]
+
+                snippet = ""
+                if i + 1 < len(lines) and not lines[i + 1].strip().startswith("["):
+                    snippet = lines[i + 1].strip()
+
+                if sid:
+                    resolved_sid, _ = _resolve_to_parent(db, sid)
+                    lineage = resolved_sid or sid
+
+                    if current_lineage_root and (lineage == current_lineage_root or sid == current_lineage_root):
+                        i += 1
+                        continue
+                    if current_session_id and (sid == current_session_id or lineage == current_session_id):
+                        i += 1
+                        continue
+
+                    if lineage not in vec_ranked:
+                        meta = (
+                            db.get_session(resolved_sid)
+                            or db.get_session(sid)
+                            or {}
+                        )
+                        if meta.get("source") not in _HIDDEN_SESSION_SOURCES:
+                            entry = {
+                                "session_id": sid,
+                                "when": _format_timestamp(meta.get("started_at")),
+                                "source": meta.get("source", "unknown"),
+                                "title": meta.get("title") or None,
+                                "match_source": "vector",
+                                "vector_score": score,
+                                "snippet": snippet[:200] if snippet else "",
+                            }
+                            if pname:
+                                entry["profile"] = pname
+                            if resolved_sid and resolved_sid != sid:
+                                entry["parent_session_id"] = resolved_sid
+                            vec_ranked[lineage] = (rank, entry)
+                            rank += 1
+            except Exception as e:
+                logging.debug("vector candidate parse error: %s", e)
+        i += 1
+
+    return vec_ranked
+
+
+def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None) -> str:
-    '''Discovery shape: Score-Aware Calibrated Dual-Track RRF (FTS5 + Dense Vector) Fusion & Smart Hydration.'''
+    \'\'\'Discovery shape: Score-Aware Calibrated Dual-Track RRF (FTS5 + Dense Vector) Fusion & Smart Hydration.\'\'\'
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
 
@@ -152,7 +255,7 @@ RRF_HYBRID_DISCOVER_BLOCK = """def _discover(db, query: str, role_filter: Option
         "as markdown, in backticks, on its own line, or next to the "
         "title/id/date. To read more around a compact result, scroll: "
         "session_search(session_id=..., around_message_id=match_message_id)."))
-"""
+'''
 
 
 def patch_session_search_tool():
@@ -165,7 +268,7 @@ def patch_session_search_tool():
 
     pattern = r'def _discover\(db, query: str[\s\S]*?(?=def _resolve_profile_db)'
     if re.search(pattern, content):
-        new_content = re.sub(pattern, lambda m: RRF_HYBRID_DISCOVER_BLOCK + '\n\n\n', content, count=1)
+        new_content = re.sub(pattern, lambda m: RRF_HYBRID_FULL_BLOCK + '\n\n\n', content, count=1)
     else:
         print('Warning: Could not locate _discover anchor in session_search_tool.py', file=sys.stderr)
         return False
@@ -173,7 +276,7 @@ def patch_session_search_tool():
     try:
         SESSION_TOOL_FILE.write_text(new_content, encoding='utf-8')
         py_compile.compile(str(SESSION_TOOL_FILE), doraise=True)
-        print('✓ session_search_tool calibrated RRF & smart hydration patch verified')
+        print('✓ session_search_tool calibrated RRF, extraction & smart hydration patch verified')
         return True
     except Exception as e:
         print(f'Syntax validation failed after patching session_search_tool: {e}. Rolling back.', file=sys.stderr)
