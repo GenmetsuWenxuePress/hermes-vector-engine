@@ -22,12 +22,12 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 
 **Hermes Vector Engine** is an **industrial-grade, high-reliability, 100% offline local vector retrieval engine** engineered for multi-agent ecosystems and cross-platform compute topologies (Linux servers, macOS Apple Silicon, Windows native, and WSL2 hybrid setups).
 
-### Architectural Pillars
+### Architectural Principles
 * 🔒 **100% Offline & Zero Cost**: Driven by local `BGE-M3` (1024-dimensional dense embeddings). **Zero external API charges, zero token consumption, zero privacy leaks**.
 * ⚡ **Ultra-Fast Dual Storage**: Embedded `SQLite (WAL) + FAISS (FlatIP)` architecture. No heavy vector database daemons; sub-millisecond cold start.
 * 🧩 **AST-Aware Syntax Chunking**: Block-level Markdown parser protecting code blocks (```` ``` ````) and tables (`|...|`) from mid-statement truncation.
 * 🌐 **Multi-Profile & Multi-Tenant Native**: Built-in multi-profile namespace routing with complete isolation and traceable source provenance.
-* 🛡️ **Confidence-Gated Anti-Hallucination**: Dual-track hybrid retrieval (FTS5 keyword priority + vector cosine similarity) gated by a strict threshold (`min_score >= 0.70`).
+* 🛡️ **Confidence-Gated Anti-Hallucination**: Vector search enforces a strict threshold (`min_score >= 0.70`), filtering weak associations; paired with an agent-level **Tiered Fallback Hybrid Search** pattern for optimal compute efficiency.
 
 ---
 
@@ -38,10 +38,10 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 │                        Traditional Vector Search / RAG Pain Points                     │
 ├─────────────────────────┬──────────────────────────────┬───────────────────────────────┤
 │ 💥 1. Context Amnesia   │ 💥 2. Broken Code & Tables   │ 💥 3. Multi-Agent Cross-Pollution│
-│ Traditional systems     │ Naive character-length split │ Multiple agents share a flat  │
-│ enforce a 30-day cutoff,│ cuts functions or markdown   │ vector space; memories        │
-│ losing critical history │ tables in half, destroying   │ contaminate across tasks      │
-│ and causing hallucinations. headers and code syntax.   │ without source isolation.     │
+│ Fixed retention cutoffs │ Naive character-length split │ Multiple agents share a flat  │
+│ destroy critical context│ cuts functions or markdown   │ vector space; memories        │
+│ and history, leading    │ tables in half, destroying   │ contaminate across tasks      │
+│ to hallucination loops. │ syntax and table headers.    │ without source isolation.     │
 └─────────────────────────┴──────────────────────────────┴───────────────────────────────┘
 ```
 
@@ -52,14 +52,14 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ 1. Multi-Profile Ingestion Layer (WSL2 / Linux / macOS)                                │
-│    ├── Primary Profile (~/.hermes/) ──► Active sessions / JSONL dumps / Memories / Skills │
-│    └── Named Profiles (~/.hermes/profiles/*) ──► Ops profiles / Isolated tasks / Plans │
+│    ├── Primary Profile (~/.hermes/) ──► Active sessions / Archived history / Skills     │
+│    └── Named Profiles (~/.hermes/profiles/*) ──► Named profiles / Plans / Memories     │
 └──────────────────────────────────────────┬─────────────────────────────────────────────┘
                                            │ (1. Traversal + AST-Aware Chunking + Tagging)
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │ 2. Indexing Control & Defense Layer (Python: scripts/index_all.py)                     │
-│    ├── Incognito Sentinel Barrier (/tmp/.hermes-incognito-active: Skip sensitive runs) │
+│    ├── Dynamic Privacy Sentinel (Interception barrier for incognito / private tasks)   │
 │    └── 4 SQLite Incremental Trackers (mtime/size/count fingerprinting: 0s skip)        │
 └──────────────────────────────────────────┬─────────────────────────────────────────────┘
                                            │ (2. Streaming HTTP batch requests, Batch=32)
@@ -77,12 +77,12 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 │    ├── SQLite Database: vector_store.db (Text chunks, 4096-byte Blobs, Metadata)       │
 │    └── FAISS Index: vector_index.faiss (FlatIP exact cosine similarity space, <150μs)  │
 └──────────────────────────────────────────┬─────────────────────────────────────────────┘
-                                           │ (4. Dual Hybrid Recall: FTS5 + Vector RRF)
+                                           │ (4. Dense vector cosine search + min-score 0.70)
                                            ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ 5. Runtime Consumers                                                                   │
-│    ├── Intelligent Tool: session_search (FTS5 + Vector threshold adaptive fallback)    │
-│    ├── CLI Tool: index_all.py search (--kind filtering & --min-score gating)          │
+│ 5. Runtime Consumers & Integration Patterns                                            │
+│    ├── CLI Search Tool: index_all.py search (--kind filtering & --min-score gating)   │
+│    ├── Agent Tiered Hybrid: session_search (FTS5 exact first + Vector confidence fall) │
 │    └── Standalone Agent SDK: examples/standalone_rag_demo.py                           │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -115,7 +115,7 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
-* **Atomic Blocks**: Code fences (```` ``` ````) and tables (`|...|`) are treated as atomic units.
+* **Atomic Blocks**: Code fences (```` ``` ````) and tables (`|...|`) are treated as indivisible atomic units.
 * **Context Inheritance**: Chunks automatically inherit the nearest Markdown heading hierarchy.
 
 ---
@@ -133,13 +133,13 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 
 ---
 
-### Pillar 3: 5-Dimensional Knowledge Coverage
+### Pillar 3: 5-Dimensional Heterogeneous Knowledge Coverage
 
-1. **Full-history Sessions (`sessions`)**: Directly indexes `state.db` without 30-day truncation.
-2. **Skills & 850+ Deep References (`skills`)**: Full coverage of `references/*.md` manuals.
-3. **Persistent Memory (`memory`)**: Core system facts and user profiles.
-4. **Architecture Plans (`plans`)**: Execution roadmaps and dependency graphs.
-5. **Incognito Barrier (`incognito`)**: Automatically skips indexing if `/tmp/.hermes-incognito-active` is set.
+1. **Full-history Sessions (`sessions`)**: Connects to the agent session database, retaining full multi-turn context.
+2. **Hierarchical Skills & Deep References (`skills`)**: Recursively indexes `SKILL.md` along with nested technical manuals (`references/*.md`).
+3. **Persistent Memory (`memory`)**: Core system operational facts, agreements, and user profiles.
+4. **Architecture Plans (`plans`)**: Execution blueprints, dependency graphs, and staged deliverables.
+5. **Dynamic Privacy Sentinel (`privacy sentinel`)**: Lightweight runtime barrier skipping sensitive/incognito sessions before embedding.
 
 ---
 
@@ -151,9 +151,30 @@ In autonomous AI agent systems and large language model workflows, **long-term m
 
 ---
 
-### Pillar 5: Hybrid Search with Reciprocal Rank Fusion (RRF)
+### Pillar 5: Tiered Fallback Hybrid Search Pattern
 
-$$RRF(d) = \sum_{m \in M} \frac{w_m}{60 + \text{rank}_m(d)}$$
+When integrating with agents, the engine recommends a **Tiered Fallback Architecture** to maximize precision while saving GPU compute:
+
+```
+                  [Agent Receives User Query / Troubleshooting Request]
+                                           │
+                                           ▼
+                         ┌───────────────────────────────────┐
+                         │ Step 1: FTS5 Exact Keyword Search │ ──► Sufficient Hits? ──► [Return Direct (0 GPU)]
+                         └─────────────────┬─────────────────┘           (Yes)
+                                           │ (No: Sparse hits / Conceptual)
+                                           ▼
+                         ┌───────────────────────────────────┐
+                         │ Step 2: Trigger Vector Supplement │
+                         │ • index_all.py search --kind ...  │
+                         │ • Filter min_score < 0.70 noise   │
+                         └─────────────────┬─────────────────┘
+                                           │
+                                           ▼
+                         ┌───────────────────────────────────┐
+                         │ Step 3: Inject High-Confidence RAG│
+                         └───────────────────────────────────┘
+```
 
 ---
 
@@ -240,7 +261,9 @@ python3 scripts/index_all.py vacuum
 
 ---
 
-## 📊 8. Physical Benchmarks
+## 📊 8. Production Scale Benchmarks
+
+The following benchmarks are measured on a production multi-profile setup (encompassing 850+ deep references, full history sessions, totaling 35,189 1024-dim vectors):
 
 | Metric | Measured Physical Result (AMD Ryzen 7 8845H / Radeon 780M) |
 | :--- | :--- |
