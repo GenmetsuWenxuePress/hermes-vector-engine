@@ -52,6 +52,14 @@ KNOWLEDGE_SEARCH_SCHEMA = {
 }
 
 
+def _get_vector_python() -> str:
+    """Resolve a Python interpreter with faiss & numpy available.
+    Hermes venv does not include faiss; system /usr/bin/python3 is the primary runtime."""
+    if os.path.exists("/usr/bin/python3"):
+        return "/usr/bin/python3"
+    return sys.executable or "python3"
+
+
 def _resolve_source_to_path(source: str) -> Optional[str]:
     """Convert a vector source tag back to its physical file path on disk."""
     home = Path.home()
@@ -110,8 +118,9 @@ def knowledge_search(
     if not script_path.exists():
         return json.dumps({"success": False, "error": f"Index script not found at {script_path}", "results": []}, ensure_ascii=False)
 
+    py_bin = _get_vector_python()
     cmd = [
-        sys.executable or "/usr/bin/python3",
+        py_bin,
         str(script_path),
         "search",
     ]
@@ -144,7 +153,6 @@ def knowledge_search(
                 score_str = line.split("]")[0].replace("  [", "").replace("[", "").strip()
                 score = float(score_str)
 
-                # Icon and source part
                 after_score = line.split("]", 1)[1].strip()
                 parts = after_score.split(maxsplit=1)
                 icon = parts[0] if len(parts) > 0 else "📌"
@@ -154,7 +162,6 @@ def knowledge_search(
                 if i + 1 < len(lines) and not lines[i + 1].startswith("  ["):
                     snippet = lines[i + 1].strip()
 
-                # Derive kind
                 detected_kind = "unknown"
                 if "skill" in source or icon == "🛠":
                     detected_kind = "skill"
