@@ -880,20 +880,10 @@ def index_active_sessions(conn):
 
 # ── Search ─────────────────────────────────────────────────
 
-def vector_search(query, kind=None, top_k=5, min_score=0.70, hot_sync=True):
-    """FAISS FlatIP semantic search (exact cosine similarity) with score threshold filtering."""
-    # ── Hot Incremental Sync: 即时同步最新活跃会话，消除时间差 ──
-    if hot_sync and not incognito_active():
-        try:
-            conn = init_db()
-            n_hot = index_active_sessions(conn)
-            if n_hot > 0:
-                conn.commit()
-                build_faiss_index(conn)
-            conn.close()
-        except Exception as e:
-            print(f"  ⚠️ Hot sync skipped: {e}", file=sys.stderr)
-
+def vector_search(query, kind=None, top_k=5, min_score=0.70):
+    """FAISS FlatIP semantic search (exact cosine similarity) with score threshold filtering.
+    Pure read-only query execution with zero database write locks.
+    """
     faiss_data = load_faiss_index()
     if not faiss_data:
         print("⚠️ No FAISS index found. Run indexing first.", file=sys.stderr)
