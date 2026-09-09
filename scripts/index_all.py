@@ -40,7 +40,7 @@ HOME = Path.home()
 HERMES_ROOT = HOME / ".hermes"
 VECTOR_DB = HERMES_ROOT / "vector_store.db"
 FAISS_INDEX = HERMES_ROOT / "vector_index.faiss"
-EMBED_URL = os.getenv("HERMES_EMBED_URL", "http://127.0.0.1:8081/embedding")
+EMBED_URL = "http://127.0.0.1:8081/embedding"
 INC_SENTINEL = Path("/tmp/.hermes-incognito-active")
 
 # Chunking
@@ -572,6 +572,7 @@ def index_skills(conn, batch_file_limit=30):
             conn.executemany("INSERT OR REPLACE INTO vectors VALUES (?,?,?,?,?,?)", rows)
             new_total += len(rows)
 
+        # 批次更新 Tracker 并提交事务
         for t_key, pname, ftype, rel, fpath, mtime, size in file_batch:
             conn.execute(
                 "INSERT OR REPLACE INTO skill_file_tracker VALUES (?,?,?,?)",
@@ -879,8 +880,20 @@ def index_active_sessions(conn):
 
 # ── Search ─────────────────────────────────────────────────
 
-def vector_search(query, kind=None, top_k=5, min_score=0.70):
+def vector_search(query, kind=None, top_k=5, min_score=0.70, hot_sync=True):
     """FAISS FlatIP semantic search (exact cosine similarity) with score threshold filtering."""
+    # ── Hot Incremental Sync: 即时同步最新活跃会话，消除时间差 ──
+    if hot_sync and not incognito_active():
+        try:
+            conn = init_db()
+            n_hot = index_active_sessions(conn)
+            if n_hot > 0:
+                conn.commit()
+                build_faiss_index(conn)
+            conn.close()
+        except Exception as e:
+            print(f"  ⚠️ Hot sync skipped: {e}", file=sys.stderr)
+
     faiss_data = load_faiss_index()
     if not faiss_data:
         print("⚠️ No FAISS index found. Run indexing first.", file=sys.stderr)
@@ -931,6 +944,7 @@ def vector_search(query, kind=None, top_k=5, min_score=0.70):
             kind_name, source, text = id_to_meta.get(doc_id, ("?", "?", "?"))
             mapped.append((score, doc_id, text, source, kind_name))
 
+    # Sort and take top_k
     mapped.sort(key=lambda x: x[0], reverse=True)
     mapped = mapped[:top_k]
 

@@ -1,129 +1,23 @@
 #!/usr/bin/env python3
 """
-Idempotent patch applicator for Hermes session_search true concurrent dual-track RRF fusion.
-Used by systemd ExecStartPre before gateway startup.
+Idempotent patch applicator for Hermes session_search score-aware calibrated RRF fusion,
+smart gap-gated hydration, and knowledge_search core toolset registration.
+Used by systemd ExecStartPre before gateway startup and by hermes-maintenance updates.
 """
 
+import os
+import re
 import sys
 import py_compile
-import re
 from pathlib import Path
 
-TARGET_FILE = Path.home() / '.hermes' / 'hermes-agent' / 'tools' / 'session_search_tool.py'
-MARKER = 'VECTOR-CONCURRENT-RRF-HYBRID-PATCH'
+HERMES_ROOT = Path.home() / ".hermes" / "hermes-agent"
+SESSION_TOOL_FILE = HERMES_ROOT / "tools" / "session_search_tool.py"
+TOOLSETS_FILE = HERMES_ROOT / "toolsets.py"
 
-RRF_HYBRID_DISCOVER_BLOCK = r"""# VECTOR-CONCURRENT-RRF-HYBRID-PATCH: True Concurrent Dual-Track RRF Fusion Engine
-def _vector_search_candidates(
-    db,
-    query: str,
-    limit: int = 20,
-    min_score: float = 0.70,
-    current_lineage_root: str = None,
-    current_session_id: str = None,
-) -> dict:
-    '''Query vector engine via index_all.py and return {lineage_root: (rank, match_info)}.'''
-    import subprocess
-    import re as _re
-    from pathlib import Path
-
-    script_path = Path.home() / '.hermes' / 'scripts' / 'index_all.py'
-    if not script_path.exists():
-        return {}
-
-    cmd = [
-        '/usr/bin/python3',
-        str(script_path),
-        'search',
-        '--kind',
-        'session',
-        '--min-score',
-        str(min_score),
-        query,
-        str(limit),
-    ]
-    try:
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    except Exception as e:
-        logging.debug('vector candidate search subprocess failed: %s', e)
-        return {}
-
-    if res.returncode != 0 or not res.stdout:
-        return {}
-
-    lines = res.stdout.splitlines()
-    vec_ranked = {}
-    rank = 1
-
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith('  [') and ']' in line and '💬' in line:
-            try:
-                score_part = line.split(']')[0].replace('  [', '').replace('[', '').strip()
-                score = float(score_part)
-
-                if score < min_score:
-                    i += 1
-                    continue
-
-                source_part = line.split('💬')[1].strip()
-                m = _re.search(r'(?:active_session:|session:)([\w\d_-]+)', source_part)
-                if not m:
-                    i += 1
-                    continue
-                sid = m.group(1).replace('.jsonl', '')
-
-                pname = None
-                if source_part.startswith('profile:'):
-                    pname = source_part.split(':')[1]
-
-                snippet = ''
-                if i + 1 < len(lines) and not lines[i + 1].startswith('  ['):
-                    snippet = lines[i + 1].strip()
-
-                if sid:
-                    resolved_sid, _ = _resolve_to_parent(db, sid)
-                    lineage = resolved_sid or sid
-
-                    if current_lineage_root and (lineage == current_lineage_root or sid == current_lineage_root):
-                        i += 1
-                        continue
-                    if current_session_id and (sid == current_session_id or lineage == current_session_id):
-                        i += 1
-                        continue
-
-                    if lineage not in vec_ranked:
-                        meta = (
-                            db.get_session(resolved_sid)
-                            or db.get_session(sid)
-                            or {}
-                        )
-                        if meta.get('source') not in _HIDDEN_SESSION_SOURCES:
-                            entry = {
-                                'session_id': sid,
-                                'when': _format_timestamp(meta.get('started_at')),
-                                'source': meta.get('source', 'unknown'),
-                                'title': meta.get('title') or None,
-                                'match_source': 'vector',
-                                'vector_score': score,
-                                'snippet': snippet[:200] if snippet else '',
-                            }
-                            if pname:
-                                entry['profile'] = pname
-                            if resolved_sid and resolved_sid != sid:
-                                entry['parent_session_id'] = resolved_sid
-                            vec_ranked[lineage] = (rank, entry)
-                            rank += 1
-            except Exception as e:
-                logging.debug('vector candidate parse error: %s', e)
-        i += 1
-
-    return vec_ranked
-
-
-def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
+RRF_HYBRID_DISCOVER_BLOCK = """def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None) -> str:
-    '''Discovery shape: Concurrent Dual-Track RRF (FTS5 + Dense Vector) Fusion.'''
+    '''Discovery shape: Score-Aware Calibrated Dual-Track RRF (FTS5 + Dense Vector) Fusion & Smart Hydration.'''
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
 
@@ -160,32 +54,47 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
     except Exception as e:
         logging.debug('concurrent vector search failed: %s', e)
 
-    # ── RRF Fusion (Reciprocal Rank Fusion) ──
+    # ── Score-Aware Calibrated RRF Fusion ──
     all_lineages = set(fts_ranked.keys()) | set(vec_ranked.keys())
     if not all_lineages and not title_result:
         return _discover_payload(db, query, detail, [], message=(
             "No matching sessions found in FTS5 or Vector knowledge space."))
 
     k_rrf = 60
+    w_vec = 1.25         # High semantic intent weight
+    w_fts = 1.00         # Keyword lexical baseline
+    synergy_boost = 0.005 # Synergy boost when hit in both FTS5 & Vector
+
     fused_scores = {}
     for lin in all_lineages:
         r_f = fts_ranked[lin][0] if lin in fts_ranked else None
         r_v = vec_ranked[lin][0] if lin in vec_ranked else None
 
-        score_f = (1.0 / (k_rrf + r_f)) if r_f else 0.0
-        score_v = (1.0 / (k_rrf + r_v)) if r_v else 0.0
+        score_f = (w_fts / (k_rrf + r_f)) if r_f else 0.0
+        
+        # Vector score-aware calibration: (vector_score / 0.80)^2 non-linear boost
+        score_v = 0.0
+        v_score = None
+        if r_v:
+            v_score = vec_ranked[lin][1].get("vector_score") or 0.70
+            conf_multiplier = (v_score / 0.80) ** 2
+            score_v = (w_vec * conf_multiplier) / (k_rrf + r_v)
+
         total_rrf = score_f + score_v
+        if lin in fts_ranked and lin in vec_ranked:
+            total_rrf += synergy_boost
 
         if lin in fts_ranked and lin in vec_ranked:
             match_info = dict(fts_ranked[lin][1])
             match_info["match_source"] = "hybrid"
-            match_info["vector_score"] = vec_ranked[lin][1].get("vector_score")
+            match_info["vector_score"] = v_score
             match_info["rrf_score"] = total_rrf
             if "profile" in vec_ranked[lin][1]:
                 match_info["profile"] = vec_ranked[lin][1]["profile"]
         elif lin in vec_ranked:
             match_info = dict(vec_ranked[lin][1])
             match_info["match_source"] = "vector"
+            match_info["vector_score"] = v_score
             match_info["rrf_score"] = total_rrf
         else:
             match_info = dict(fts_ranked[lin][1])
@@ -194,19 +103,36 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
 
         fused_scores[lin] = (total_rrf, match_info)
 
-    # Sort strictly by RRF score descending
+    # Sort strictly by calibrated RRF score descending
     sorted_fused = sorted(fused_scores.items(), key=lambda x: x[1][0], reverse=True)
     top_fused = sorted_fused[:limit]
 
-    # ── Assembly & Hydration ──
+    # ── Dynamic Gap-Gated Smart Hydration ──
     results = [title_result] if title_result else []
-    for lin, (rrf_sc, match_info) in top_fused:
-        if match_info.get("match_source") == "vector":
-            results.append(match_info)
-            continue
+    top_score = top_fused[0][1][0] if top_fused else 0.0
+
+    for idx, (lin, (rrf_sc, match_info)) in enumerate(top_fused):
         if match_info.get("_title_only"):
             continue
-        entry = _hydrate_hit(db, lin, match_info, "full" if detail == "full" or not results else "compact")
+
+        # Decide hydration level
+        if detail == "full":
+            hydrate_mode = "full"
+        elif detail == "compact":
+            hydrate_mode = "compact"
+        else:
+            # detail == "adaptive"
+            # Top 1 always full; Top 2~3 full if score >= 85% of Top 1 or vector_score >= 0.82
+            v_sc = match_info.get("vector_score") or 0.0
+            if idx == 0 or (idx < 3 and (rrf_sc >= top_score * 0.85 or v_sc >= 0.82)):
+                hydrate_mode = "full"
+            else:
+                hydrate_mode = "compact"
+
+        entry = _hydrate_hit(db, lin, match_info, hydrate_mode)
+        if entry is None and match_info.get("match_source") == "vector":
+            entry = dict(match_info)
+
         if entry is not None:
             entry["match_source"] = match_info.get("match_source", "fts5")
             if "rrf_score" in match_info:
@@ -229,33 +155,79 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
 """
 
 
-def apply_patch():
-    if not TARGET_FILE.exists():
-        print(f'Error: target file {TARGET_FILE} does not exist', file=sys.stderr)
-        sys.exit(2)
+def patch_session_search_tool():
+    if not SESSION_TOOL_FILE.exists():
+        print(f'Error: target file {SESSION_TOOL_FILE} does not exist', file=sys.stderr)
+        return False
 
-    content = TARGET_FILE.read_text(encoding='utf-8')
+    content = SESSION_TOOL_FILE.read_text(encoding='utf-8')
     original_backup = content
 
-    # 1. 查找替换精确的 _discover 函数块
     pattern = r'def _discover\(db, query: str[\s\S]*?(?=def _resolve_profile_db)'
     if re.search(pattern, content):
         new_content = re.sub(pattern, lambda m: RRF_HYBRID_DISCOVER_BLOCK + '\n\n\n', content, count=1)
     else:
-        print('Error: Could not locate _discover anchor in target file', file=sys.stderr)
-        sys.exit(2)
+        print('Warning: Could not locate _discover anchor in session_search_tool.py', file=sys.stderr)
+        return False
 
     try:
-        TARGET_FILE.write_text(new_content, encoding='utf-8')
-        py_compile.compile(str(TARGET_FILE), doraise=True)
+        SESSION_TOOL_FILE.write_text(new_content, encoding='utf-8')
+        py_compile.compile(str(SESSION_TOOL_FILE), doraise=True)
+        print('✓ session_search_tool calibrated RRF & smart hydration patch verified')
+        return True
     except Exception as e:
-        print(f'Syntax validation failed after patching: {e}. Rolling back.', file=sys.stderr)
-        TARGET_FILE.write_text(original_backup, encoding='utf-8')
-        sys.exit(3)
-
-    print('vector-concurrent-rrf patch applied successfully')
-    sys.exit(0)
+        print(f'Syntax validation failed after patching session_search_tool: {e}. Rolling back.', file=sys.stderr)
+        SESSION_TOOL_FILE.write_text(original_backup, encoding='utf-8')
+        return False
 
 
-if __name__ == '__main__':
-    apply_patch()
+def patch_toolsets():
+    if not TOOLSETS_FILE.exists():
+        print(f'Error: target file {TOOLSETS_FILE} does not exist', file=sys.stderr)
+        return False
+
+    content = TOOLSETS_FILE.read_text(encoding='utf-8')
+    original_backup = content
+    modified = False
+
+    # 1. 确保 _HERMES_CORE_TOOLS 包含 "knowledge_search"
+    if '"knowledge_search"' not in content:
+        if '"skill_manage",' in content:
+            content = content.replace('"skill_manage",', '"skill_manage", "knowledge_search",', 1)
+            modified = True
+
+    # 2. 确保 "skills" toolset 包含 "knowledge_search"
+    if '["skills_list", "skill_view", "skill_manage"]' in content:
+        content = content.replace(
+            '["skills_list", "skill_view", "skill_manage"]',
+            '["skills_list", "skill_view", "skill_manage", "knowledge_search"]',
+            1
+        )
+        modified = True
+
+    if modified:
+        try:
+            TOOLSETS_FILE.write_text(content, encoding='utf-8')
+            py_compile.compile(str(TOOLSETS_FILE), doraise=True)
+            print('✓ toolsets.py knowledge_search registration verified')
+        except Exception as e:
+            print(f'Syntax validation failed after patching toolsets: {e}. Rolling back.', file=sys.stderr)
+            TOOLSETS_FILE.write_text(original_backup, encoding='utf-8')
+            return False
+    else:
+        print('✓ toolsets.py already includes knowledge_search')
+    return True
+
+
+def apply_patch():
+    print("Applying Hermes calibrated RRF, smart hydration & knowledge_search auto-restore patch...")
+    ok1 = patch_session_search_tool()
+    ok2 = patch_toolsets()
+    if ok1 and ok2:
+        print("✓ All vector hybrid patches applied successfully")
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(apply_patch())
